@@ -32,20 +32,43 @@ def normalize(ts):
     return (ts - mean) / std
 
 
-def find_matches(time_series, template, threshold=None, top_k=10, step=1):
+def find_matches(time_series, template, threshold=None, top_k=10, step=1, amplitude_tolerance=None):
     if len(template) >= len(time_series):
         return []
 
-    ts_norm = normalize(time_series)
-    template_norm = normalize(template)
+    ts_arr = np.array(time_series, dtype=np.float64)
+    template_arr = np.array(template, dtype=np.float64)
 
-    template_len = len(template)
-    ts_len = len(time_series)
+    ts_norm = normalize(ts_arr)
+    template_norm = normalize(template_arr)
+
+    template_len = len(template_arr)
+    ts_len = len(ts_arr)
+
+    template_min = np.min(template_arr)
+    template_max = np.max(template_arr)
+    template_range = template_max - template_min
+
+    amp_filter_enabled = amplitude_tolerance is not None and amplitude_tolerance >= 0
+
+    if amp_filter_enabled:
+        tolerance_ratio = amplitude_tolerance / 100.0
+        min_allowed = template_min - template_range * tolerance_ratio
+        max_allowed = template_max + template_range * tolerance_ratio
+        if template_range == 0:
+            amp_filter_enabled = False
 
     matches = []
     distances = []
 
     for i in range(0, ts_len - template_len + 1, step):
+        if amp_filter_enabled:
+            segment_raw = ts_arr[i:i + template_len]
+            seg_min = np.min(segment_raw)
+            seg_max = np.max(segment_raw)
+            if seg_min < min_allowed or seg_max > max_allowed:
+                continue
+
         segment = ts_norm[i:i + template_len]
         dist = dtw_distance(segment, template_norm)
         distances.append((i, dist))
@@ -66,12 +89,20 @@ def find_matches(time_series, template, threshold=None, top_k=10, step=1):
                 break
         if not overlap:
             used_indices.add(start_idx)
-            matches.append({
+            match_info = {
                 'start_index': start_idx,
                 'end_index': start_idx + template_len - 1,
                 'distance': float(dist),
                 'similarity': float(1.0 / (1.0 + dist))
-            })
+            }
+            if amp_filter_enabled:
+                seg_min = float(np.min(ts_arr[start_idx:start_idx + template_len]))
+                seg_max = float(np.max(ts_arr[start_idx:start_idx + template_len]))
+                match_info['segment_min'] = seg_min
+                match_info['segment_max'] = seg_max
+                match_info['template_min'] = float(template_min)
+                match_info['template_max'] = float(template_max)
+            matches.append(match_info)
 
     return matches
 

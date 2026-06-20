@@ -326,6 +326,11 @@ function updateTemplateDisplay() {
 
     document.getElementById('btnMatch').disabled = len === 0;
 
+    const ampCheckbox = document.getElementById('ampFilterEnabled');
+    ampCheckbox.disabled = len === 0;
+
+    updateAmplitudeLegend();
+
     if (len > 0) {
         const data = templateData.values.map((v, i) => [i, v]);
         templateChart.setOption({
@@ -336,6 +341,120 @@ function updateTemplateDisplay() {
             series: [{ data: [] }]
         });
     }
+}
+
+function getAmplitudeTolerance() {
+    const enabled = document.getElementById('ampFilterEnabled').checked;
+    if (!enabled) return null;
+    return parseFloat(document.getElementById('ampTolerance').value);
+}
+
+function updateAmplitudeDisplay() {
+    const tolerance = getAmplitudeTolerance();
+    const slider = document.getElementById('ampTolerance');
+    const valueDisplay = document.getElementById('ampValueDisplay');
+    const labelTip = document.getElementById('ampLabelTip');
+
+    const currentValue = parseInt(slider.value);
+    valueDisplay.textContent = currentValue + '%';
+    labelTip.textContent = tolerance !== null ? `±${currentValue}%` : '不限制';
+
+    const enabled = document.getElementById('ampFilterEnabled').checked;
+    slider.disabled = !enabled;
+
+    updateAmplitudeLegend();
+}
+
+function updateAmplitudeLegend() {
+    const legend = document.getElementById('ampLegend');
+    const enabled = document.getElementById('ampFilterEnabled').checked;
+    const templateRangeText = document.getElementById('templateRangeText');
+    const allowedRangeText = document.getElementById('allowedRangeText');
+
+    if (!enabled || templateData.values.length === 0) {
+        legend.style.display = 'none';
+        return;
+    }
+
+    const tolerance = getAmplitudeTolerance();
+    const tMin = Math.min(...templateData.values);
+    const tMax = Math.max(...templateData.values);
+    const tRange = tMax - tMin;
+    const allowedMin = tMin - tRange * tolerance / 100;
+    const allowedMax = tMax + tRange * tolerance / 100;
+
+    templateRangeText.textContent = `模板: ${tMin.toFixed(1)} ~ ${tMax.toFixed(1)}`;
+    allowedRangeText.textContent = `允许: ${allowedMin.toFixed(1)} ~ ${allowedMax.toFixed(1)}`;
+    legend.style.display = 'flex';
+}
+
+let amplitudeDebounceTimer = null;
+function onAmplitudeChanged() {
+    updateAmplitudeDisplay();
+
+    if (amplitudeDebounceTimer) {
+        clearTimeout(amplitudeDebounceTimer);
+    }
+
+    const tolerance = getAmplitudeTolerance();
+    const hasValidTemplate = templateData.values.length >= 5;
+
+    if (hasValidTemplate && matchResults.length > 0) {
+        amplitudeDebounceTimer = setTimeout(() => {
+            autoReMatch();
+        }, 300);
+    }
+}
+
+function autoReMatch() {
+    if (!currentDatasetId || templateData.values.length === 0) return;
+
+    const validation = validateTemplateData(templateData);
+    if (!validation.valid) return;
+
+    const topK = parseInt(document.getElementById('topK').value) || 10;
+    const step = parseInt(document.getElementById('step').value) || 1;
+    const thresholdInput = document.getElementById('threshold').value;
+    const threshold = thresholdInput ? parseFloat(thresholdInput) : null;
+    const amplitudeTolerance = getAmplitudeTolerance();
+    const templateName = document.getElementById('templateName').value || '';
+
+    const payload = {
+        template: templateData.values,
+        template_timestamps: templateData.timestamps,
+        top_k: topK,
+        step: step,
+        template_name: templateName
+    };
+    if (threshold !== null) payload.threshold = threshold;
+    if (amplitudeTolerance !== null) payload.amplitude_tolerance = amplitudeTolerance;
+
+    fetch(`${API_BASE}/datasets/${currentDatasetId}/match`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+    })
+        .then(r => r.json())
+        .then(data => {
+            if (data.success) {
+                matchResults = data.matches;
+                selectedMatchIndex = -1;
+                renderMatchResults();
+                highlightMatchesOnChart();
+
+                const amp = data.amplitude_tolerance;
+                if (amp !== undefined) {
+                    const tip = document.getElementById('ampLabelTip');
+                    tip.textContent = `±${amp}% | ${data.count} 匹配`;
+                }
+            } else {
+                showToast('重新匹配失败: ' + (data.error || '未知错误'), 'error');
+            }
+        })
+        .catch(err => {
+            console.error('自动重新匹配失败:', err);
+            showToast('自动重新匹配失败', 'error');
+        });
 }
 
 function highlightTemplateOnChart(startIdx, endIdx) {
@@ -549,6 +668,7 @@ function startMatch() {
     const step = parseInt(document.getElementById('step').value) || 1;
     const thresholdInput = document.getElementById('threshold').value;
     const threshold = thresholdInput ? parseFloat(thresholdInput) : null;
+    const amplitudeTolerance = getAmplitudeTolerance();
     const templateName = document.getElementById('templateName').value || '';
 
     if (topK < 1) {
@@ -568,17 +688,20 @@ function startMatch() {
     btn.disabled = true;
     btn.textContent = '匹配中...';
 
+    const payload = {
+        template: templateData.values,
+        template_timestamps: templateData.timestamps,
+        top_k: topK,
+        step: step,
+        template_name: templateName
+    };
+    if (threshold !== null) payload.threshold = threshold;
+    if (amplitudeTolerance !== null) payload.amplitude_tolerance = amplitudeTolerance;
+
     fetch(`${API_BASE}/datasets/${currentDatasetId}/match`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-            template: templateData.values,
-            template_timestamps: templateData.timestamps,
-            top_k: topK,
-            step: step,
-            threshold: threshold,
-            template_name: templateName
-        })
+        body: JSON.stringify(payload)
     })
         .then(r => r.json())
         .then(data => {
@@ -588,9 +711,19 @@ function startMatch() {
                 renderMatchResults();
                 highlightMatchesOnChart();
                 if (data.count > 0) {
-                    showToast(`匹配完成，找到 ${data.count} 个相似模式`, 'success');
+                    let msg = `匹配完成，找到 ${data.count} 个相似模式`;
+                    if (data.amplitude_tolerance !== undefined) {
+                        msg += ` (幅度±${data.amplitude_tolerance}%)`;
+                    }
+                    showToast(msg, 'success');
                 } else {
-                    showToast('未找到相似的模式，请尝试调整参数或更换模板', 'info');
+                    let msg = '未找到相似的模式';
+                    if (data.amplitude_tolerance !== undefined) {
+                        msg += `，请尝试放宽幅度容忍度或更换模板`;
+                    } else {
+                        msg += '，请尝试调整参数或更换模板';
+                    }
+                    showToast(msg, 'info');
                 }
             } else {
                 showToast('匹配失败: ' + (data.error || '未知错误'), 'error');
@@ -821,6 +954,22 @@ function bindEvents() {
 
     document.getElementById('uploadModal').addEventListener('click', function(e) {
         if (e.target === this) hideUploadModal();
+    });
+
+    const ampCheckbox = document.getElementById('ampFilterEnabled');
+    ampCheckbox.addEventListener('change', function() {
+        onAmplitudeChanged();
+        if (this.checked && matchResults.length > 0) {
+            showToast('已启用幅度过滤，正在重新匹配...', 'info');
+        }
+    });
+
+    const ampSlider = document.getElementById('ampTolerance');
+    ampSlider.addEventListener('input', onAmplitudeChanged);
+    ampSlider.addEventListener('change', function() {
+        if (matchResults.length > 0) {
+            showToast(`幅度容忍度调整为 ±${this.value}%，已自动重新匹配`, 'info');
+        }
     });
 }
 

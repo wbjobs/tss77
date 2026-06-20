@@ -89,6 +89,7 @@ def match_pattern(dataset_id):
     threshold = data.get('threshold')
     top_k = data.get('top_k', 10)
     step = data.get('step', 1)
+    amplitude_tolerance = data.get('amplitude_tolerance')
     template_name = data.get('template_name', '')
 
     if not template_values:
@@ -123,6 +124,14 @@ def match_pattern(dataset_id):
         except (ValueError, TypeError):
             return jsonify({'success': False, 'error': '距离阈值无效'}), 400
 
+    if amplitude_tolerance is not None:
+        try:
+            amplitude_tolerance = float(amplitude_tolerance)
+            if amplitude_tolerance < 0 or amplitude_tolerance > 1000:
+                raise ValueError
+        except (ValueError, TypeError):
+            return jsonify({'success': False, 'error': '幅度偏差百分比无效（0-1000）'}), 400
+
     ts_data = get_time_series(dataset_id)
     if not ts_data['values']:
         return jsonify({'success': False, 'error': '数据集中无数据'}), 400
@@ -135,12 +144,16 @@ def match_pattern(dataset_id):
         template_values,
         threshold=threshold,
         top_k=top_k,
-        step=step
+        step=step,
+        amplitude_tolerance=amplitude_tolerance
     )
+
+    template_min = min(template_values)
+    template_max = max(template_values)
 
     results = []
     for match in matches:
-        results.append({
+        result = {
             'start_index': match['start_index'],
             'end_index': match['end_index'],
             'start_time': ts_data['timestamps'][match['start_index']],
@@ -148,17 +161,33 @@ def match_pattern(dataset_id):
             'distance': match['distance'],
             'similarity': match['similarity'],
             'values': ts_data['values'][match['start_index']:match['end_index'] + 1]
-        })
+        }
+        if amplitude_tolerance is not None:
+            result['segment_min'] = match.get('segment_min')
+            result['segment_max'] = match.get('segment_max')
+            result['template_min'] = template_min
+            result['template_max'] = template_max
+            result['amplitude_tolerance'] = amplitude_tolerance
+        results.append(result)
 
     if template_name:
         save_match_result(dataset_id, template_name, results)
 
-    return jsonify({
+    response = {
         'success': True,
         'matches': results,
         'count': len(results),
-        'template_length': len(template_values)
-    })
+        'template_length': len(template_values),
+        'template_min': template_min,
+        'template_max': template_max
+    }
+    if amplitude_tolerance is not None:
+        response['amplitude_tolerance'] = amplitude_tolerance
+        tolerance_range = (template_max - template_min) * amplitude_tolerance / 100
+        response['allowed_min'] = template_min - tolerance_range
+        response['allowed_max'] = template_max + tolerance_range
+
+    return jsonify(response)
 
 
 @app.route('/api/datasets/<int:dataset_id>/match-results', methods=['GET'])
