@@ -92,11 +92,43 @@ def match_pattern(dataset_id):
     template_name = data.get('template_name', '')
 
     if not template_values:
-        return jsonify({'success': False, 'error': 'Template data is required'}), 400
+        return jsonify({'success': False, 'error': '模板数据不能为空'}), 400
+
+    if len(template_values) < 5:
+        return jsonify({'success': False, 'error': '模板数据点过少，至少需要5个点'}), 400
+
+    try:
+        template_values = [float(v) for v in template_values]
+    except (ValueError, TypeError):
+        return jsonify({'success': False, 'error': '模板数据包含无效数值'}), 400
+
+    if any(not (float('-inf') < v < float('inf')) for v in template_values):
+        return jsonify({'success': False, 'error': '模板数据包含无效数值'}), 400
+
+    all_same = all(v == template_values[0] for v in template_values)
+    if all_same:
+        return jsonify({'success': False, 'error': '模板数据无变化，无法进行匹配'}), 400
+
+    if not isinstance(top_k, int) or top_k < 1:
+        return jsonify({'success': False, 'error': '最大匹配数必须是正整数'}), 400
+
+    if not isinstance(step, int) or step < 1:
+        return jsonify({'success': False, 'error': '步长必须是正整数'}), 400
+
+    if threshold is not None:
+        try:
+            threshold = float(threshold)
+            if threshold < 0:
+                raise ValueError
+        except (ValueError, TypeError):
+            return jsonify({'success': False, 'error': '距离阈值无效'}), 400
 
     ts_data = get_time_series(dataset_id)
     if not ts_data['values']:
-        return jsonify({'success': False, 'error': 'No data in dataset'}), 400
+        return jsonify({'success': False, 'error': '数据集中无数据'}), 400
+
+    if len(template_values) >= len(ts_data['values']):
+        return jsonify({'success': False, 'error': '模板长度不能大于等于时序数据总长度'}), 400
 
     matches = find_matches(
         ts_data['values'],

@@ -11,6 +11,53 @@ let mainChart = null;
 let templateChart = null;
 let compareChart = null;
 
+let isBrushing = false;
+let brushStartData = null;
+
+function showToast(message, type = 'warning') {
+    const icons = {
+        warning: '⚠️',
+        error: '❌',
+        success: '✅',
+        info: 'ℹ️'
+    };
+
+    let container = document.querySelector('.toast-container');
+    if (!container) {
+        container = document.createElement('div');
+        container.className = 'toast-container';
+        document.body.appendChild(container);
+    }
+
+    const toast = document.createElement('div');
+    toast.className = `toast toast-${type}`;
+    toast.innerHTML = `<span class="toast-icon">${icons[type] || '💬'}</span><span>${message}</span>`;
+    container.appendChild(toast);
+
+    setTimeout(() => {
+        if (toast.parentNode) {
+            toast.parentNode.removeChild(toast);
+        }
+    }, 3000);
+}
+
+function validateTemplateData(template) {
+    if (!template || !template.values || template.values.length === 0) {
+        return { valid: false, reason: '模板数据为空' };
+    }
+    if (template.values.length < 5) {
+        return { valid: false, reason: '模板数据点过少，至少需要5个点' };
+    }
+    if (template.values.some(v => isNaN(v) || !isFinite(v))) {
+        return { valid: false, reason: '模板数据包含无效数值' };
+    }
+    const allSame = template.values.every(v => v === template.values[0]);
+    if (allSame) {
+        return { valid: false, reason: '模板数据无变化，无法进行匹配' };
+    }
+    return { valid: true };
+}
+
 document.addEventListener('DOMContentLoaded', function() {
     initCharts();
     loadDatasets();
@@ -153,29 +200,74 @@ function initCharts() {
     });
 
     mainChart.on('brushSelected', handleBrushSelected);
+    mainChart.on('brushStart', function() {
+        isBrushing = true;
+    });
+    mainChart.on('brushEnd', function(params) {
+        if (!params || !params.areas || params.areas.length === 0) {
+            if (isBrushing && templateData.values.length === 0) {
+                showToast('请重新框选有效区域', 'warning');
+            }
+        }
+        isBrushing = false;
+    });
 }
 
 function handleBrushSelected(params) {
-    if (!params.batch || params.batch.length === 0) return;
+    if (!params || !params.batch || params.batch.length === 0) {
+        if (isBrushing) {
+            showToast('请重新框选有效区域', 'warning');
+            isBrushing = false;
+        }
+        return;
+    }
 
     const brushArea = params.batch[0];
     if (!brushArea.areas || brushArea.areas.length === 0) {
-        clearTemplate();
+        if (isBrushing) {
+            showToast('框选区域无效，请重新框选', 'warning');
+            clearTemplate();
+            isBrushing = false;
+        }
         return;
     }
 
     const area = brushArea.areas[0];
-    if (area.coordRange) {
+    if (area.coordRange && area.coordRange.length > 0) {
         const [startX, endX] = area.coordRange[0];
-        selectTemplateByRange(startX, endX);
+        if (startX !== undefined && endX !== undefined && startX !== endX) {
+            isBrushing = true;
+            selectTemplateByRange(startX, endX);
+        } else {
+            showToast('请重新框选有效区域', 'warning');
+            clearTemplate();
+        }
+    } else {
+        if (isBrushing) {
+            showToast('请重新框选有效区域', 'warning');
+            clearTemplate();
+        }
     }
 }
 
 function selectTemplateByRange(startTime, endTime) {
-    if (!timeSeriesData.timestamps.length) return;
+    if (!timeSeriesData.timestamps || timeSeriesData.timestamps.length === 0) {
+        showToast('没有可用的时序数据', 'error');
+        return false;
+    }
 
-    let startIndex = 0;
-    let endIndex = timeSeriesData.timestamps.length - 1;
+    if (startTime === undefined || endTime === undefined || isNaN(startTime) || isNaN(endTime)) {
+        showToast('请重新框选有效区域', 'warning');
+        clearTemplate();
+        return false;
+    }
+
+    if (startTime > endTime) {
+        [startTime, endTime] = [endTime, startTime];
+    }
+
+    let startIndex = -1;
+    let endIndex = -1;
 
     for (let i = 0; i < timeSeriesData.timestamps.length; i++) {
         if (timeSeriesData.timestamps[i] >= startTime) {
@@ -191,19 +283,37 @@ function selectTemplateByRange(startTime, endTime) {
         }
     }
 
-    if (endIndex - startIndex < 5) {
-        return;
+    if (startIndex === -1 || endIndex === -1 || startIndex >= endIndex) {
+        showToast('请重新框选有效区域', 'warning');
+        clearTemplate();
+        return false;
+    }
+
+    const pointCount = endIndex - startIndex + 1;
+    if (pointCount < 5) {
+        showToast('选中区域数据点过少（至少需要5个点），请扩大框选范围', 'warning');
+        clearTemplate();
+        return false;
+    }
+
+    const selectedValues = timeSeriesData.values.slice(startIndex, endIndex + 1);
+    const validation = validateTemplateData({ values: selectedValues });
+    if (!validation.valid) {
+        showToast(validation.reason + '，请重新框选', 'warning');
+        clearTemplate();
+        return false;
     }
 
     templateData = {
         timestamps: timeSeriesData.timestamps.slice(startIndex, endIndex + 1),
-        values: timeSeriesData.values.slice(startIndex, endIndex + 1),
+        values: selectedValues,
         startIndex: startIndex,
         endIndex: endIndex
     };
 
     updateTemplateDisplay();
     highlightTemplateOnChart(startIndex, endIndex);
+    return true;
 }
 
 function updateTemplateDisplay() {
@@ -260,14 +370,19 @@ function highlightTemplateOnChart(startIdx, endIdx) {
 function clearTemplate() {
     templateData = { timestamps: [], values: [], startIndex: 0, endIndex: 0 };
     brushSelection = null;
+    isBrushing = false;
     updateTemplateDisplay();
     clearMatchResults();
 
-    mainChart.dispatchAction({
-        type: 'brush',
-        command: 'clear',
-        areas: []
-    });
+    try {
+        mainChart.dispatchAction({
+            type: 'brush',
+            command: 'clear',
+            areas: []
+        });
+    } catch (e) {
+        console.warn('清除brush失败:', e);
+    }
 
     mainChart.setOption({
         graphic: []
@@ -409,13 +524,45 @@ function highlightMatchesOnChart() {
 }
 
 function startMatch() {
-    if (!currentDatasetId || templateData.values.length === 0) return;
+    if (!currentDatasetId) {
+        showToast('请先选择一个数据集', 'warning');
+        return;
+    }
+
+    const validation = validateTemplateData(templateData);
+    if (!validation.valid) {
+        showToast(validation.reason + '，请重新框选有效区域', 'warning');
+        return;
+    }
+
+    if (!timeSeriesData || !timeSeriesData.values || timeSeriesData.values.length === 0) {
+        showToast('时序数据为空，无法进行匹配', 'error');
+        return;
+    }
+
+    if (templateData.values.length >= timeSeriesData.values.length) {
+        showToast('模板长度不能大于等于时序数据总长度', 'warning');
+        return;
+    }
 
     const topK = parseInt(document.getElementById('topK').value) || 10;
     const step = parseInt(document.getElementById('step').value) || 1;
     const thresholdInput = document.getElementById('threshold').value;
     const threshold = thresholdInput ? parseFloat(thresholdInput) : null;
     const templateName = document.getElementById('templateName').value || '';
+
+    if (topK < 1) {
+        showToast('最大匹配数必须大于0', 'warning');
+        return;
+    }
+    if (step < 1) {
+        showToast('步长必须大于0', 'warning');
+        return;
+    }
+    if (threshold !== null && (isNaN(threshold) || threshold < 0)) {
+        showToast('距离阈值无效', 'warning');
+        return;
+    }
 
     const btn = document.getElementById('btnMatch');
     btn.disabled = true;
@@ -440,13 +587,18 @@ function startMatch() {
                 selectedMatchIndex = -1;
                 renderMatchResults();
                 highlightMatchesOnChart();
+                if (data.count > 0) {
+                    showToast(`匹配完成，找到 ${data.count} 个相似模式`, 'success');
+                } else {
+                    showToast('未找到相似的模式，请尝试调整参数或更换模板', 'info');
+                }
             } else {
-                alert('匹配失败: ' + data.error);
+                showToast('匹配失败: ' + (data.error || '未知错误'), 'error');
             }
         })
         .catch(err => {
             console.error('匹配失败:', err);
-            alert('匹配失败，请检查后端服务');
+            showToast('匹配失败，请检查后端服务', 'error');
         })
         .finally(() => {
             btn.disabled = false;
