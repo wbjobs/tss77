@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>时序数据异常模式匹配引擎</title>
+    <script src="https://cdn.jsdelivr.net/npm/echarts@5.4.3/dist/echarts.min.js"></script>
+    <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+    <div class="app-container">
+        <header class="app-header">
+            <h1>时序数据异常模式匹配引擎</h1>
+            <p class="subtitle">在长序列时序数据中查找和标记已知的异常模式</p>
+        </header>
+
+        <div class="main-content">
+            <aside class="sidebar">
+                <div class="panel">
+                    <h2>数据集</h2>
+                    <div class="dataset-list" id="datasetList">
+                        <div class="loading">加载中...</div>
+                    </div>
+                    <div class="panel-actions">
+                        <button class="btn btn-primary" id="btnGenerateSample">生成示例数据</button>
+                        <button class="btn btn-secondary" id="btnUploadData">上传数据</button>
+                    </div>
+                </div>
+
+                <div class="panel">
+                    <h2>模板设置</h2>
+                    <div class="template-info">
+                        <div class="info-row">
+                            <span class="label">状态:</span>
+                            <span class="value" id="templateStatus">未选择</span>
+                        </div>
+                        <div class="info-row">
+                            <span class="label">长度:</span>
+                            <span class="value" id="templateLength">--</span>
+                        </div>
+                        <div class="info-row">
+                            <span class="label">范围:</span>
+                            <span class="value" id="templateRange">--</span>
+                        </div>
+                    </div>
+                    <div class="mini-chart" id="templateChart"></div>
+                </div>
+
+                <div class="panel">
+                    <h2>匹配参数</h2>
+                    <div class="form-group">
+                        <label>最大匹配数</label>
+                        <input type="number" id="topK" value="10" min="1" max="100">
+                    </div>
+                    <div class="form-group">
+                        <label>步长</label>
+                        <input type="number" id="step" value="1" min="1" max="50">
+                    </div>
+                    <div class="form-group">
+                        <label>距离阈值 (可选)</label>
+                        <input type="number" id="threshold" placeholder="留空自动选择">
+                    </div>
+                    <div class="form-group">
+                        <label>模板名称 (可选)</label>
+                        <input type="text" id="templateName" placeholder="保存匹配结果">
+                    </div>
+                    <div class="panel-actions">
+                        <button class="btn btn-primary btn-block" id="btnMatch" disabled>开始匹配</button>
+                        <button class="btn btn-secondary btn-block" id="btnClearTemplate">清除模板</button>
+                    </div>
+                </div>
+
+                <div class="panel">
+                    <h2>匹配结果</h2>
+                    <div class="match-results" id="matchResults">
+                        <div class="empty-state">暂无匹配结果</div>
+                    </div>
+                </div>
+            </aside>
+
+            <main class="content-area">
+                <div class="chart-panel">
+                    <div class="chart-header">
+                        <h2 id="chartTitle">时序数据</h2>
+                        <div class="chart-tools">
+                            <span class="hint">提示: 在图表上拖拽鼠标框选异常模式作为模板</span>
+                            <button class="btn btn-small" id="btnResetZoom">重置视图</button>
+                        </div>
+                    </div>
+                    <div class="chart-container" id="mainChart"></div>
+                </div>
+
+                <div class="chart-panel">
+                    <div class="chart-header">
+                        <h2>模板对比视图</h2>
+                        <div class="chart-tools">
+                            <span class="hint" id="compareHint">选择匹配结果查看对比</span>
+                        </div>
+                    </div>
+                    <div class="chart-container" id="compareChart"></div>
+                </div>
+            </main>
+        </div>
+    </div>
+
+    <div class="modal" id="uploadModal" style="display: none;">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>上传数据</h3>
+                <button class="close-btn" id="closeModal">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="form-group">
+                    <label>数据集名称</label>
+                    <input type="text" id="uploadDatasetName" placeholder="输入数据集名称">
+                </div>
+                <div class="form-group">
+                    <label>描述 (可选)</label>
+                    <textarea id="uploadDatasetDesc" rows="2" placeholder="数据集描述"></textarea>
+                </div>
+                <div class="form-group">
+                    <label>数据格式</label>
+                    <select id="uploadFormat">
+                        <option value="json">JSON 格式</option>
+                        <option value="csv">CSV 格式</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>数据内容</label>
+                    <textarea id="uploadData" rows="8" placeholder='{"timestamps": [1, 2, 3], "values": [10, 20, 15]}'></textarea>
+                </div>
+                <div class="form-group">
+                    <label>或上传文件</label>
+                    <input type="file" id="uploadFile" accept=".json,.csv">
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" id="cancelUpload">取消</button>
+                <button class="btn btn-primary" id="confirmUpload">上传</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="js/app.js"></script>
+</body>
+</html>

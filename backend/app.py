@@ -1,0 +1,156 @@
+from flask import Flask, request, jsonify
+from flask_cors import CORS
+import os
+import sys
+
+sys.path.append(os.path.dirname(__file__))
+
+from data_manager import (
+    init_db, create_dataset, delete_dataset, get_time_series,
+    get_datasets, get_dataset_info, save_match_result,
+    get_match_results, generate_sample_data, insert_time_series
+)
+from dtw_matcher import find_matches, normalize
+
+app = Flask(__name__)
+CORS(app)
+
+init_db()
+
+
+@app.route('/api/datasets', methods=['GET'])
+def list_datasets():
+    datasets = get_datasets()
+    return jsonify({'success': True, 'datasets': datasets})
+
+
+@app.route('/api/datasets', methods=['POST'])
+def create_new_dataset():
+    data = request.json
+    name = data.get('name')
+    description = data.get('description', '')
+
+    if not name:
+        return jsonify({'success': False, 'error': 'Name is required'}), 400
+
+    dataset_id = create_dataset(name, description)
+    return jsonify({'success': True, 'dataset_id': dataset_id})
+
+
+@app.route('/api/datasets/<int:dataset_id>', methods=['DELETE'])
+def remove_dataset(dataset_id):
+    delete_dataset(dataset_id)
+    return jsonify({'success': True})
+
+
+@app.route('/api/datasets/<int:dataset_id>', methods=['GET'])
+def dataset_detail(dataset_id):
+    info = get_dataset_info(dataset_id)
+    if not info:
+        return jsonify({'success': False, 'error': 'Dataset not found'}), 404
+    return jsonify({'success': True, 'dataset': info})
+
+
+@app.route('/api/datasets/<int:dataset_id>/data', methods=['GET'])
+def get_data(dataset_id):
+    start = request.args.get('start', type=float)
+    end = request.args.get('end', type=float)
+
+    data = get_time_series(dataset_id, start, end)
+    return jsonify({
+        'success': True,
+        'timestamps': data['timestamps'],
+        'values': data['values'],
+        'count': len(data['timestamps'])
+    })
+
+
+@app.route('/api/datasets/<int:dataset_id>/data', methods=['POST'])
+def upload_data(dataset_id):
+    data = request.json
+    timestamps = data.get('timestamps', [])
+    values = data.get('values', [])
+
+    if not timestamps or not values:
+        return jsonify({'success': False, 'error': 'timestamps and values are required'}), 400
+
+    if len(timestamps) != len(values):
+        return jsonify({'success': False, 'error': 'timestamps and values must have same length'}), 400
+
+    insert_time_series(dataset_id, timestamps, values)
+    return jsonify({'success': True, 'count': len(timestamps)})
+
+
+@app.route('/api/datasets/<int:dataset_id>/match', methods=['POST'])
+def match_pattern(dataset_id):
+    data = request.json
+    template_values = data.get('template', [])
+    template_timestamps = data.get('template_timestamps', [])
+    threshold = data.get('threshold')
+    top_k = data.get('top_k', 10)
+    step = data.get('step', 1)
+    template_name = data.get('template_name', '')
+
+    if not template_values:
+        return jsonify({'success': False, 'error': 'Template data is required'}), 400
+
+    ts_data = get_time_series(dataset_id)
+    if not ts_data['values']:
+        return jsonify({'success': False, 'error': 'No data in dataset'}), 400
+
+    matches = find_matches(
+        ts_data['values'],
+        template_values,
+        threshold=threshold,
+        top_k=top_k,
+        step=step
+    )
+
+    results = []
+    for match in matches:
+        results.append({
+            'start_index': match['start_index'],
+            'end_index': match['end_index'],
+            'start_time': ts_data['timestamps'][match['start_index']],
+            'end_time': ts_data['timestamps'][match['end_index']],
+            'distance': match['distance'],
+            'similarity': match['similarity'],
+            'values': ts_data['values'][match['start_index']:match['end_index'] + 1]
+        })
+
+    if template_name:
+        save_match_result(dataset_id, template_name, results)
+
+    return jsonify({
+        'success': True,
+        'matches': results,
+        'count': len(results),
+        'template_length': len(template_values)
+    })
+
+
+@app.route('/api/datasets/<int:dataset_id>/match-results', methods=['GET'])
+def list_match_results(dataset_id):
+    results = get_match_results(dataset_id)
+    return jsonify({'success': True, 'results': results})
+
+
+@app.route('/api/generate-sample', methods=['POST'])
+def generate_sample():
+    data = request.json or {}
+    name = data.get('name', 'sample_data')
+    dataset_id = generate_sample_data(name)
+    return jsonify({'success': True, 'dataset_id': dataset_id})
+
+
+@app.route('/api/health', methods=['GET'])
+def health_check():
+    return jsonify({'status': 'ok', 'message': 'Time series pattern matching API is running'})
+
+
+if __name__ == '__main__':
+    sample_exists = any(d['name'] == 'sample_data' for d in get_datasets())
+    if not sample_exists:
+        generate_sample_data()
+
+    app.run(host='0.0.0.0', port=5000, debug=True)
